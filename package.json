@@ -1,0 +1,28 @@
+{
+  "name": "sylloo-app",
+  "version": "1.0.0",
+  "description": "Description of your CLI application",
+  "main": "index.js",
+  "bin": {
+    "sylloo-app": "index.js"
+  },
+  "scripts": {
+    "test": "node -r esm index.js",
+    "setup": "node setup.js && npm install -g .",
+    "postinstall": "npm run setup "
+  },
+  "author": "S M Rishad",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "chokidar": "^4.0.1",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "inquirer": "^12.0.1",
+    "md5-file": "^5.0.0"
+  },
+  "devDependencies": {
+    "esm": "^3.2.25"
+  }
+}
