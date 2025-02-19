@@ -82,8 +82,14 @@ const syncCommand = new Command("sync")
             .replace(/\\/g, "/")
             .replace(/\/+/g, "/");
 
+          const downloadfileHash = await getFileHash(normalizedLocation);
+
           // Check if the file's location exists in the watch directory
-          if (!watchDirectoryFilesNormalized.includes(normalizedLocation)) {
+          if (
+            !watchDirectoryFilesNormalized.includes(normalizedLocation) ||
+            (watchDirectoryFilesNormalized.includes(normalizedLocation) &&
+              downloadfileHash !== manifestFile["hash"])
+          ) {
             const response = await downloadFile({
               directory: normalizedLocation, // Include directory name in the payload
             });
@@ -108,6 +114,7 @@ const syncCommand = new Command("sync")
           `projects/${tenant}/`,
           ""
         );
+
         const fileHash = await getFileHash(watchDirectoryFile);
 
         // Find the corresponding entry in the manifest file
