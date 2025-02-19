@@ -12,8 +12,9 @@ import { join, basename, dirname } from "path";
 
 const syncCommand = new Command("sync")
   .argument("[tenant]", "Tenant name to sync")
+  .argument("[syncType]", "Tenant name to sync type (push/pull)")
   .description("Watch tenant for changes and upload them")
-  .action(async (tenant) => {
+  .action(async (tenant, syncType) => {
     // Check if tenant are not provided
     if (!tenant) {
       // Prompt for missing arguments
@@ -28,6 +29,21 @@ const syncCommand = new Command("sync")
 
       // Use provided arguments or answers from prompts
       tenant = tenant || answers.tenant;
+    }
+
+    if (!syncType) {
+      // Prompt for missing arguments
+      const answers = await inquirer.prompt([
+        {
+          type: "input",
+          name: "syncType",
+          message: "Enter the sync type name:",
+          when: () => !syncType, // Prompt if tenant is not provided
+        },
+      ]);
+
+      // Use provided arguments or answers from prompts
+      syncType = syncType || answers.syncType;
     }
 
     // Define the directory to watch and the API endpoint to upload to
@@ -56,68 +72,73 @@ const syncCommand = new Command("sync")
       return file.replace(/\\/g, "/").replace(/\/+/g, "/");
     });
 
-    // Check if getManifestFiles contains data
-    if (getManifestFiles && getManifestFiles["file_manifest"].length > 0) {
-      // Iterate over each file in the manifest
-      for (const manifestFile of getManifestFiles["file_manifest"]) {
-        const location = `projects/${tenant}/` + manifestFile["location"];
-        const normalizedLocation = location
-          .replace(/\\/g, "/")
-          .replace(/\/+/g, "/");
+    if (syncType === "pull") {
+      // Check if getManifestFiles contains data
+      if (getManifestFiles && getManifestFiles["file_manifest"].length > 0) {
+        // Iterate over each file in the manifest
+        for (const manifestFile of getManifestFiles["file_manifest"]) {
+          const location = `projects/${tenant}/` + manifestFile["location"];
+          const normalizedLocation = location
+            .replace(/\\/g, "/")
+            .replace(/\/+/g, "/");
 
-        // Check if the file's location exists in the watch directory
-        if (!watchDirectoryFilesNormalized.includes(normalizedLocation)) {
-          const response = await downloadFile({
-            directory: normalizedLocation, // Include directory name in the payload
-          });
-          const fileData = Buffer.from(response.content, "base64");
+          // Check if the file's location exists in the watch directory
+          if (!watchDirectoryFilesNormalized.includes(normalizedLocation)) {
+            const response = await downloadFile({
+              directory: normalizedLocation, // Include directory name in the payload
+            });
+            const fileData = Buffer.from(response.content, "base64");
 
-          // // Ensure that the directory structure leading up to the file exists
-          await mkdir(dirname(normalizedLocation), { recursive: true });
+            // // Ensure that the directory structure leading up to the file exists
+            await mkdir(dirname(normalizedLocation), { recursive: true });
 
-          // // Write the file to the local filesystem
-          await writeFile(normalizedLocation, fileData);
-          console.log(`Sync File ${normalizedLocation} has been downloaded.`);
+            // // Write the file to the local filesystem
+            await writeFile(normalizedLocation, fileData);
+            console.log(`Sync File ${normalizedLocation} has been downloaded.`);
+          }
         }
       }
     }
 
-    // Iterate over each file in the watch directory
-    for (const watchDirectoryFile of watchDirectoryFilesNormalized) {
-      // Construct the manifest location from the watch directory file path
-      const manifestLocation = watchDirectoryFile.replace(
-        `projects/${tenant}/`,
-        ""
-      );
-      const fileHash = await getFileHash(watchDirectoryFile);
+    if (syncType === "push") {
+      // Iterate over each file in the watch directory
+      for (const watchDirectoryFile of watchDirectoryFilesNormalized) {
+        // Construct the manifest location from the watch directory file path
+        const manifestLocation = watchDirectoryFile.replace(
+          `projects/${tenant}/`,
+          ""
+        );
+        const fileHash = await getFileHash(watchDirectoryFile);
 
-      // Find the corresponding entry in the manifest file
-      const manifestEntry = getManifestFiles["file_manifest"].find(
-        (file) => file["location"] === manifestLocation
-      );
+        // Find the corresponding entry in the manifest file
+        const manifestEntry = getManifestFiles["file_manifest"].find(
+          (file) => file["location"] === manifestLocation
+        );
 
-      // Check if the file's location exists in the manifest
-      if (
-        !manifestEntry ||
-        (manifestEntry && manifestEntry["hash"] !== fileHash)
-      ) {
-        try {
-          const fileContent = await readFile(watchDirectoryFile);
-          const fileName = basename(watchDirectoryFile);
-          const fileDir = dirname(watchDirectoryFile);
-          const fileContentBase64 = Buffer.from(fileContent).toString("base64");
+        // Check if the file's location exists in the manifest
+        if (
+          !manifestEntry ||
+          (manifestEntry && manifestEntry["hash"] !== fileHash)
+        ) {
+          try {
+            const fileContent = await readFile(watchDirectoryFile);
+            const fileName = basename(watchDirectoryFile);
+            const fileDir = dirname(watchDirectoryFile);
+            const fileContentBase64 =
+              Buffer.from(fileContent).toString("base64");
 
-          await uploadFile({
-            file_name: fileName,
-            file_path: watchDirectoryFile,
-            content: fileContentBase64,
-            directory: fileDir, // Include directory name in the payload
-            action_type: "update",
-            last_modified: (await stat(watchDirectoryFile)).mtime,
-          });
-          console.log(`Sync File ${manifestLocation} has been updated.`);
-        } catch (error) {
-          handleErrorMessage(error);
+            await uploadFile({
+              file_name: fileName,
+              file_path: watchDirectoryFile,
+              content: fileContentBase64,
+              directory: fileDir, // Include directory name in the payload
+              action_type: "update",
+              last_modified: (await stat(watchDirectoryFile)).mtime,
+            });
+            console.log(`Sync File ${manifestLocation} has been updated.`);
+          } catch (error) {
+            handleErrorMessage(error);
+          }
         }
       }
     }
