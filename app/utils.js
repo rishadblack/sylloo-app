@@ -143,9 +143,14 @@ async function getAllFiles(directory, ignoreFolders = [".git"]) {
 }
 
 async function getFileHash(filePath) {
-  // Calculate and return the MD5 hash of the file content
-  const fileHash = await md5File(filePath);
-  return fileHash;
+  try {
+    // Calculate and return the MD5 hash
+    const fileHash = await md5File(filePath);
+    return fileHash;
+  } catch (error) {
+    // If file does not exist, return null
+    return null;
+  }
 }
 
 function handleErrorMessage(error) {
