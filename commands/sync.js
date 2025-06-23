@@ -6,15 +6,18 @@ import {
   getAllFiles,
   getFileHash,
   handleErrorMessage,
+  getFileLastModified,
+  loadSyncMeta,
+  saveSyncMeta,
+  updateSyncMeta,
 } from "../app/utils.js";
 import { readdir, stat, readFile, writeFile, mkdir } from "fs/promises";
 import { join, basename, dirname } from "path";
 
 const syncCommand = new Command("sync")
   .argument("[tenant]", "Tenant name to sync")
-  .argument("[syncType]", "Tenant name to sync type (push/pull)")
   .description("Watch tenant for changes and upload them")
-  .action(async (tenant, syncType) => {
+  .action(async (tenant) => {
     // Check if tenant are not provided
     if (!tenant) {
       // Prompt for missing arguments
@@ -29,21 +32,6 @@ const syncCommand = new Command("sync")
 
       // Use provided arguments or answers from prompts
       tenant = tenant || answers.tenant;
-    }
-
-    if (!syncType) {
-      // Prompt for missing arguments
-      const answers = await inquirer.prompt([
-        {
-          type: "input",
-          name: "syncType",
-          message: "Enter the sync type name:",
-          when: () => !syncType, // Prompt if tenant is not provided
-        },
-      ]);
-
-      // Use provided arguments or answers from prompts
-      syncType = syncType || answers.syncType;
     }
 
     // Define the directory to watch and the API endpoint to upload to
@@ -61,7 +49,14 @@ const syncCommand = new Command("sync")
 
     const watchDirectoryFilesData = await getAllFiles(watchDirectory);
 
-    const ignoredExtensions = [".gitkeep", ".ignore", ".gitignore", ".temp"]; // Add your desired extensions here
+    const ignoredExtensions = [
+      ".gitkeep",
+      ".ignore",
+      ".gitignore",
+      ".temp",
+      ".bak",
+      ".sync.json",
+    ]; // Add your desired extensions here
 
     const watchDirectoryFiles = watchDirectoryFilesData.filter((file) => {
       const extension = file.substr(file.lastIndexOf("."));
@@ -72,83 +67,150 @@ const syncCommand = new Command("sync")
       return file.replace(/\\/g, "/").replace(/\/+/g, "/");
     });
 
-    if (syncType === "pull") {
-      // Check if getManifestFiles contains data
-      if (getManifestFiles && getManifestFiles["file_manifest"].length > 0) {
-        // Iterate over each file in the manifest
-        for (const manifestFile of getManifestFiles["file_manifest"]) {
-          const location = `projects/${tenant}/` + manifestFile["location"];
-          const normalizedLocation = location
-            .replace(/\\/g, "/")
-            .replace(/\/+/g, "/");
+    const justUploaded = new Set();
+    const syncMeta = await loadSyncMeta(tenant);
 
-          const downloadfileHash = await getFileHash(normalizedLocation);
+    //UPLOAD
+    for (const watchDirectoryFile of watchDirectoryFilesNormalized) {
+      const manifestLocation = watchDirectoryFile.replace(
+        `projects/${tenant}/`,
+        ""
+      );
 
-          // Check if the file's location exists in the watch directory
-          if (
-            !watchDirectoryFilesNormalized.includes(normalizedLocation) ||
-            (watchDirectoryFilesNormalized.includes(normalizedLocation) &&
-              downloadfileHash !== manifestFile["hash"])
-          ) {
-            const response = await downloadFile({
-              directory: normalizedLocation, // Include directory name in the payload
-            });
-            const fileData = Buffer.from(response.content, "base64");
+      const localHash = await getFileHash(watchDirectoryFile);
+      const localModified = await getFileLastModified(watchDirectoryFile); // in seconds
 
-            // // Ensure that the directory structure leading up to the file exists
-            await mkdir(dirname(normalizedLocation), { recursive: true });
+      const manifestEntry = getManifestFiles["file_manifest"].find(
+        (file) => file["location"] === manifestLocation
+      );
 
-            // // Write the file to the local filesystem
-            await writeFile(normalizedLocation, fileData);
-            console.log(`Sync File ${normalizedLocation} has been downloaded.`);
-          }
+      let shouldUpload = false;
+
+      if (!manifestEntry) {
+        shouldUpload = true; // new local file → upload
+      } else {
+        const remoteHash = manifestEntry["hash"];
+        const remoteModified = manifestEntry["last_modified"];
+
+        if (localHash !== remoteHash && remoteModified <= localModified) {
+          // Only upload if remote is not newer
+          shouldUpload = true;
+        }
+      }
+
+      if (shouldUpload) {
+        try {
+          const fileContent = await readFile(watchDirectoryFile);
+          const fileContentBase64 = Buffer.from(fileContent).toString("base64");
+
+          await uploadFile({
+            file_name: basename(watchDirectoryFile),
+            file_path: watchDirectoryFile,
+            content: fileContentBase64,
+            directory: dirname(watchDirectoryFile),
+            action_type: "update",
+            last_modified: localModified.toString(), // Send as seconds
+          });
+
+          justUploaded.add(watchDirectoryFile);
+
+          console.log(`Upload: ${watchDirectoryFile}`);
+        } catch (error) {
+          handleErrorMessage(error);
         }
       }
     }
 
-    if (syncType === "push") {
-      // Iterate over each file in the watch directory
-      for (const watchDirectoryFile of watchDirectoryFilesNormalized) {
-        // Construct the manifest location from the watch directory file path
-        const manifestLocation = watchDirectoryFile.replace(
-          `projects/${tenant}/`,
-          ""
-        );
+    const getDownloadManifestFiles = await manifestFile(tenant);
 
-        const fileHash = await getFileHash(watchDirectoryFile);
+    //DOWNLOAD
+    if (
+      getDownloadManifestFiles &&
+      getDownloadManifestFiles["file_manifest"].length > 0
+    ) {
+      // Iterate over each file in the manifest
+      for (const manifestFile of getDownloadManifestFiles["file_manifest"]) {
+        const location = `projects/${tenant}/` + manifestFile["location"];
+        const normalizedLocation = location
+          .replace(/\\/g, "/")
+          .replace(/\/+/g, "/");
 
-        // Find the corresponding entry in the manifest file
-        const manifestEntry = getManifestFiles["file_manifest"].find(
-          (file) => file["location"] === manifestLocation
-        );
+        if (justUploaded.has(normalizedLocation)) {
+          console.log(`🟡 Skipping ${normalizedLocation} — just uploaded.`);
+          continue;
+        }
 
-        // Check if the file's location exists in the manifest
-        if (
-          !manifestEntry ||
-          (manifestEntry && manifestEntry["hash"] !== fileHash)
-        ) {
-          try {
-            const fileContent = await readFile(watchDirectoryFile);
-            const fileName = basename(watchDirectoryFile);
-            const fileDir = dirname(watchDirectoryFile);
-            const fileContentBase64 =
-              Buffer.from(fileContent).toString("base64");
+        const remoteHash = manifestFile["hash"];
+        const remoteModified = manifestFile["last_modified"]; // seconds
 
-            await uploadFile({
-              file_name: fileName,
-              file_path: watchDirectoryFile,
-              content: fileContentBase64,
-              directory: fileDir, // Include directory name in the payload
-              action_type: "update",
-              last_modified: (await stat(watchDirectoryFile)).mtime,
-            });
-            console.log(`Sync File ${manifestLocation} has been updated.`);
-          } catch (error) {
-            handleErrorMessage(error);
+        const localHash = await getFileHash(normalizedLocation);
+        const localModified = await getFileLastModified(normalizedLocation); // seconds
+
+        let shouldDownload = false;
+
+        if (localHash === null) {
+          // Local file missing
+          shouldDownload = true;
+        } else if (localHash !== remoteHash) {
+          if (remoteModified > localModified) {
+            // Remote is newer → download
+            shouldDownload = true;
+          } else if (localModified > remoteModified) {
+            // Local is newer but remote wins
+            console.warn(
+              `⚠️ Conflict on ${normalizedLocation}. Remote version wins — local will be overwritten.`
+            );
+
+            try {
+              const localContent = await readFile(normalizedLocation);
+              const backupPath = normalizedLocation + ".local.bak";
+              await writeFile(backupPath, localContent);
+              console.log(`📦 Backed up local file to ${backupPath}`);
+            } catch {
+              console.warn(
+                `⚠️ Could not backup ${normalizedLocation} — file may not exist.`
+              );
+            }
+
+            shouldDownload = true;
+          } else {
+            // Same timestamp but different content → conflict (likely clock skew)
+            console.warn(
+              `⚠️ Same timestamp, different hash on ${normalizedLocation}. Downloading remote version.`
+            );
+            shouldDownload = true;
           }
+        }
+
+        if (shouldDownload) {
+          const response = await downloadFile({
+            directory: normalizedLocation,
+          });
+
+          const fileData = Buffer.from(response.content, "base64");
+
+          // Save the file if needed
+          await mkdir(dirname(normalizedLocation), { recursive: true });
+          await writeFile(normalizedLocation, fileData);
+
+          const updatedLocalModified = await getFileLastModified(
+            normalizedLocation
+          );
+
+          // updateSyncMeta(
+          //   syncMeta,
+          //   manifestFile["location"],
+          //   localHash,
+          //   updatedLocalModified,
+          //   remoteModified
+          // ); // same for remote
+
+          console.log(`Downloaded: ${normalizedLocation}`);
         }
       }
     }
+
+    // await saveSyncMeta(tenant, syncMeta);
 
     async function uploadFile(payload) {
       try {

@@ -1,8 +1,9 @@
 import { readdir, stat, readFile, writeFile, access, mkdir } from "fs/promises";
 import md5File from "md5-file";
 import axios from "axios";
-import { join, basename, dirname } from "path";
+import { join, basename, dirname, resolve } from "path";
 import https from "https";
+import { existsSync } from "fs";
 
 // Function to read a JSON file and extract the specified property
 async function setSession(data) {
@@ -153,6 +154,16 @@ async function getFileHash(filePath) {
   }
 }
 
+async function getFileLastModified(filePath) {
+  try {
+    const stats = await stat(filePath);
+    return Math.floor(stats.mtimeMs / 1000); // Convert from ms to seconds
+  } catch (error) {
+    // File doesn't exist or cannot be accessed
+    return null;
+  }
+}
+
 function handleErrorMessage(error) {
   if (
     error.response &&
@@ -175,6 +186,45 @@ function handleErrorMessage(error) {
   }
 }
 
+// Define once per tenant
+const getSyncMetaPath = (tenant) => resolve(`./projects/${tenant}/.sync.json`);
+
+async function loadSyncMeta(tenant) {
+  const path = getSyncMetaPath(tenant);
+  if (existsSync(path)) {
+    try {
+      const data = await readFile(path, "utf-8");
+      return JSON.parse(data);
+    } catch {
+      console.warn(
+        `⚠️ Failed to parse .sync.json for ${tenant}, starting fresh.`
+      );
+      return {};
+    }
+  }
+  return {};
+}
+
+async function saveSyncMeta(tenant, meta) {
+  const path = getSyncMetaPath(tenant);
+  await writeFile(path, JSON.stringify(meta, null, 2));
+}
+
+function updateSyncMeta(
+  meta,
+  filePath,
+  localHash,
+  localModified,
+  remoteModified
+) {
+  meta[filePath] = {
+    localHash,
+    localModified,
+    remoteModified,
+    syncedAt: Math.floor(Date.now() / 1000),
+  };
+}
+
 // Export the functions
 export {
   setSession,
@@ -186,4 +236,8 @@ export {
   getAllFiles,
   getFileHash,
   handleErrorMessage,
+  getFileLastModified,
+  loadSyncMeta,
+  saveSyncMeta,
+  updateSyncMeta,
 };
