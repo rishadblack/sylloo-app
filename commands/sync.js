@@ -70,57 +70,6 @@ const syncCommand = new Command("sync")
     const justUploaded = new Set();
     const syncMeta = await loadSyncMeta(tenant);
 
-    //UPLOAD
-    for (const watchDirectoryFile of watchDirectoryFilesNormalized) {
-      const manifestLocation = watchDirectoryFile.replace(
-        `projects/${tenant}/`,
-        ""
-      );
-
-      const localHash = await getFileHash(watchDirectoryFile);
-      const localModified = await getFileLastModified(watchDirectoryFile); // in seconds
-
-      const manifestEntry = getManifestFiles["file_manifest"].find(
-        (file) => file["location"] === manifestLocation
-      );
-
-      let shouldUpload = false;
-
-      if (!manifestEntry) {
-        shouldUpload = true; // new local file → upload
-      } else {
-        const remoteHash = manifestEntry["hash"];
-        const remoteModified = manifestEntry["last_modified"];
-
-        if (localHash !== remoteHash && remoteModified <= localModified) {
-          // Only upload if remote is not newer
-          shouldUpload = true;
-        }
-      }
-
-      if (shouldUpload) {
-        try {
-          const fileContent = await readFile(watchDirectoryFile);
-          const fileContentBase64 = Buffer.from(fileContent).toString("base64");
-
-          await uploadFile({
-            file_name: basename(watchDirectoryFile),
-            file_path: watchDirectoryFile,
-            content: fileContentBase64,
-            directory: dirname(watchDirectoryFile),
-            action_type: "update",
-            last_modified: localModified.toString(), // Send as seconds
-          });
-
-          justUploaded.add(watchDirectoryFile);
-
-          console.log(`Upload: ${watchDirectoryFile}`);
-        } catch (error) {
-          handleErrorMessage(error);
-        }
-      }
-    }
-
     const getDownloadManifestFiles = await manifestFile(tenant);
 
     //DOWNLOAD
@@ -135,10 +84,10 @@ const syncCommand = new Command("sync")
           .replace(/\\/g, "/")
           .replace(/\/+/g, "/");
 
-        if (justUploaded.has(normalizedLocation)) {
-          console.log(`🟡 Skipping ${normalizedLocation} — just uploaded.`);
-          continue;
-        }
+        // if (justUploaded.has(normalizedLocation)) {
+        //   console.log(`🟡 Skipping ${normalizedLocation} — just uploaded.`);
+        //   continue;
+        // }
 
         const remoteHash = manifestFile["hash"];
         const remoteModified = manifestFile["last_modified"]; // seconds
@@ -206,6 +155,57 @@ const syncCommand = new Command("sync")
           // ); // same for remote
 
           console.log(`Downloaded: ${normalizedLocation}`);
+        }
+      }
+    }
+
+    //UPLOAD
+    for (const watchDirectoryFile of watchDirectoryFilesNormalized) {
+      const manifestLocation = watchDirectoryFile.replace(
+        `projects/${tenant}/`,
+        ""
+      );
+
+      const localHash = await getFileHash(watchDirectoryFile);
+      const localModified = await getFileLastModified(watchDirectoryFile); // in seconds
+
+      const manifestEntry = getManifestFiles["file_manifest"].find(
+        (file) => file["location"] === manifestLocation
+      );
+
+      let shouldUpload = false;
+
+      if (!manifestEntry) {
+        shouldUpload = true; // new local file → upload
+      } else {
+        const remoteHash = manifestEntry["hash"];
+        const remoteModified = manifestEntry["last_modified"];
+
+        if (localHash !== remoteHash && remoteModified <= localModified) {
+          // Only upload if remote is not newer
+          shouldUpload = true;
+        }
+      }
+
+      if (shouldUpload) {
+        try {
+          const fileContent = await readFile(watchDirectoryFile);
+          const fileContentBase64 = Buffer.from(fileContent).toString("base64");
+
+          await uploadFile({
+            file_name: basename(watchDirectoryFile),
+            file_path: watchDirectoryFile,
+            content: fileContentBase64,
+            directory: dirname(watchDirectoryFile),
+            action_type: "update",
+            last_modified: localModified.toString(), // Send as seconds
+          });
+
+          // justUploaded.add(watchDirectoryFile);
+
+          console.log(`Upload: ${watchDirectoryFile}`);
+        } catch (error) {
+          handleErrorMessage(error);
         }
       }
     }
